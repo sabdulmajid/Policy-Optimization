@@ -16,5 +16,6 @@
 - `pytest` passed locally: `13 passed`.
 - Real GPU smoke succeeded on `Qwen/Qwen2.5-0.5B` with all five objectives.
 - Larger-checkpoint GPU smoke succeeded on `Qwen/Qwen2.5-7B` with `rloo`.
+- Moonlight remote-code preflight succeeded for `moonshotai/Moonlight-16B-A3B`.
 - Hugging Face cache must be redirected to `/pub7` on this machine because `/pub3` is full.
 - `git push` is currently blocked by missing GitHub credentials on this machine.

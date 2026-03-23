@@ -101,3 +101,4 @@ This repository is under active construction and currently targets a clean, well
 - `pytest`: `13 passed`
 - GPU smoke matrix on `Qwen/Qwen2.5-0.5B`: `rloo`, `dapo`, `gspo`, `cispo`, and `maxrl`
 - Larger-checkpoint GPU smoke on `Qwen/Qwen2.5-7B`: `rloo`
+- Moonshot remote-code preflight on `moonshotai/Moonlight-16B-A3B`: `AutoConfig` and `AutoTokenizer`
