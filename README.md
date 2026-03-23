@@ -95,3 +95,9 @@ po-smoke --model-id Qwen/Qwen2.5-0.5B --objective gspo --steps 2 --device cuda:0
 ## Status
 
 This repository is under active construction and currently targets a clean, well-tested v0.1 foundation for open-source LLM RL experimentation.
+
+### Verified Locally
+
+- `pytest`: `13 passed`
+- GPU smoke matrix on `Qwen/Qwen2.5-0.5B`: `rloo`, `dapo`, `gspo`, `cispo`, and `maxrl`
+- Larger-checkpoint GPU smoke on `Qwen/Qwen2.5-7B`: `rloo`
