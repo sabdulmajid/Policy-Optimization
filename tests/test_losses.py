@@ -1,7 +1,7 @@
 import torch
 
 from policy_optimization.losses import compute_objective
-from policy_optimization.types import RolloutBatch
+from policy_optimization.types import PreferenceBatch, RolloutBatch
 
 
 def _batch() -> RolloutBatch:
@@ -55,3 +55,21 @@ def test_cispo_clipping_caps_importance_weights() -> None:
     batch = _batch()
     output = compute_objective("cispo", batch, max_weight=1.0)
     assert output.metrics["weight_max"] <= 1.0 + 1e-6
+
+
+def test_preference_objectives_produce_scalar_losses() -> None:
+    batch = PreferenceBatch(
+        chosen_logprobs=torch.tensor([2.0, 1.5, 1.2]),
+        rejected_logprobs=torch.tensor([1.0, 1.1, 1.0]),
+        ref_chosen_logprobs=torch.tensor([1.7, 1.4, 1.1]),
+        ref_rejected_logprobs=torch.tensor([1.1, 1.2, 1.0]),
+        context_chosen_logprobs=torch.tensor([1.4, 1.1, 1.0]),
+        context_rejected_logprobs=torch.tensor([1.2, 1.0, 0.95]),
+        rewards=torch.tensor([2.0, 1.0, 3.0]),
+        group_ids=torch.tensor([0, 0, 1]),
+    )
+    for name in ["dpo", "mdpo", "dgpo"]:
+        output = compute_objective(name, batch)
+        assert output.loss.ndim == 0
+        assert output.loss.isfinite()
+        assert output.metrics

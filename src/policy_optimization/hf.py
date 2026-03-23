@@ -33,10 +33,15 @@ def load_causal_lm(
     device: torch.device | str,
     dtype: str = "bfloat16",
     trust_remote_code: bool = False,
+    cache_dir: str | None = None,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
     device = torch.device(device)
     torch_dtype = _torch_dtype(dtype, device)
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        trust_remote_code=trust_remote_code,
+        cache_dir=cache_dir,
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     try:
@@ -44,12 +49,14 @@ def load_causal_lm(
             model_id,
             dtype=torch_dtype,
             trust_remote_code=trust_remote_code,
+            cache_dir=cache_dir,
         )
     except TypeError:
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=torch_dtype,
             trust_remote_code=trust_remote_code,
+            cache_dir=cache_dir,
         )
     model.to(device)
     model.config.use_cache = False

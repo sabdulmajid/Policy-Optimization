@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-completion-length", type=int, default=24)
     parser.add_argument("--trainable-scope", choices=["full", "lm_head"], default="lm_head")
     parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument("--cache-dir")
     return parser.parse_args()
 
 
@@ -43,23 +44,32 @@ def build_arithmetic_prompts(prompt_count: int, seed: int) -> tuple[list[str], l
     prompts: list[str] = []
     answers: list[str] = []
     for _ in range(prompt_count):
-        operator = rng.choices(["+", "-", "*"], weights=[0.45, 0.2, 0.35], k=1)[0]
-        if operator == "+":
-            left = rng.randint(25, 250)
-            right = rng.randint(25, 250)
+        task_kind = rng.choices(["add", "sub", "mul", "nested"], weights=[0.3, 0.2, 0.3, 0.2], k=1)[0]
+        if task_kind == "add":
+            left = rng.randint(25, 350)
+            right = rng.randint(25, 350)
+            problem = f"{left} + {right}"
             answer = left + right
-        elif operator == "-":
-            left = rng.randint(50, 250)
+        elif task_kind == "sub":
+            left = rng.randint(75, 500)
             right = rng.randint(10, left)
+            problem = f"{left} - {right}"
             answer = left - right
-        else:
-            left = rng.randint(7, 31)
-            right = rng.randint(7, 31)
+        elif task_kind == "mul":
+            left = rng.randint(11, 35)
+            right = rng.randint(11, 35)
+            problem = f"{left} * {right}"
             answer = left * right
+        else:
+            left = rng.randint(10, 40)
+            middle = rng.randint(10, 35)
+            right = rng.randint(3, 12)
+            problem = f"({left} + {middle}) * {right}"
+            answer = (left + middle) * right
         prompt = (
             "Solve the arithmetic problem carefully. "
             "Return only the final integer with no explanation.\n"
-            f"Problem: {left} {operator} {right}\nAnswer:"
+            f"Problem: {problem}\nAnswer:"
         )
         prompts.append(prompt)
         answers.append(str(answer))
@@ -111,6 +121,7 @@ def main() -> None:
         device=device,
         dtype=args.dtype,
         trust_remote_code=args.trust_remote_code,
+        cache_dir=args.cache_dir,
     )
     model.train()
     trainable_parameters = set_trainable_scope(model, args.trainable_scope)
@@ -128,6 +139,7 @@ def main() -> None:
                 "model_id": args.model_id,
                 "objective": args.objective,
                 "trainable_parameters": trainable_parameters,
+                "cache_dir": args.cache_dir,
             }
         )
     )

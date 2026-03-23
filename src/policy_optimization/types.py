@@ -87,3 +87,59 @@ class RolloutBatch:
             raise ValueError("group_ids batch dimension must match token_logprobs.")
         if self.ref_token_logprobs is not None and self.ref_token_logprobs.shape != self.token_logprobs.shape:
             raise ValueError("ref_token_logprobs must match token_logprobs shape when provided.")
+
+
+@dataclass(slots=True)
+class PreferenceBatch:
+    """Pairwise preferences for DPO-style objectives."""
+
+    chosen_logprobs: torch.Tensor
+    rejected_logprobs: torch.Tensor
+    ref_chosen_logprobs: torch.Tensor | None = None
+    ref_rejected_logprobs: torch.Tensor | None = None
+    context_chosen_logprobs: torch.Tensor | None = None
+    context_rejected_logprobs: torch.Tensor | None = None
+    rewards: torch.Tensor | None = None
+    group_ids: torch.Tensor | None = None
+    extras: dict[str, torch.Tensor] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.chosen_logprobs.shape[0])
+
+    def to(self, device: torch.device | str) -> "PreferenceBatch":
+        extras = {key: value.to(device) for key, value in self.extras.items()}
+        return PreferenceBatch(
+            chosen_logprobs=self.chosen_logprobs.to(device),
+            rejected_logprobs=self.rejected_logprobs.to(device),
+            ref_chosen_logprobs=None if self.ref_chosen_logprobs is None else self.ref_chosen_logprobs.to(device),
+            ref_rejected_logprobs=None if self.ref_rejected_logprobs is None else self.ref_rejected_logprobs.to(device),
+            context_chosen_logprobs=None if self.context_chosen_logprobs is None else self.context_chosen_logprobs.to(device),
+            context_rejected_logprobs=None if self.context_rejected_logprobs is None else self.context_rejected_logprobs.to(device),
+            rewards=None if self.rewards is None else self.rewards.to(device),
+            group_ids=None if self.group_ids is None else self.group_ids.to(device),
+            extras=extras,
+        )
+
+    def validate(self) -> None:
+        if self.chosen_logprobs.ndim != 1 or self.rejected_logprobs.ndim != 1:
+            raise ValueError("chosen_logprobs and rejected_logprobs must be rank-1 [batch].")
+        if self.chosen_logprobs.shape != self.rejected_logprobs.shape:
+            raise ValueError("chosen_logprobs and rejected_logprobs must match shape.")
+        for name, tensor in [
+            ("ref_chosen_logprobs", self.ref_chosen_logprobs),
+            ("ref_rejected_logprobs", self.ref_rejected_logprobs),
+            ("context_chosen_logprobs", self.context_chosen_logprobs),
+            ("context_rejected_logprobs", self.context_rejected_logprobs),
+            ("rewards", self.rewards),
+            ("group_ids", self.group_ids),
+        ]:
+            if tensor is None:
+                continue
+            if tensor.ndim != 1:
+                raise ValueError(f"{name} must be rank-1 [batch] when provided.")
+            if tensor.shape != self.chosen_logprobs.shape:
+                raise ValueError(f"{name} must match chosen_logprobs shape when provided.")

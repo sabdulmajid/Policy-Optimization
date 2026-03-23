@@ -11,7 +11,7 @@ dist/
 *.egg-info/
 .mypy_cache/
 .ruff_cache/
-reports/
+reports/*.json
 artifacts/
 *.log
 tasks/*.tmp
