@@ -1,0 +1,17 @@
+.venv/
+.hf-cache/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+*.so
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+reports/
+artifacts/
+*.log
+tasks/*.tmp

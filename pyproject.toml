@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policy-optimization"
+version = "0.1.0"
+description = "PyTorch-native reinforcement learning objectives for LLM post-training."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Policy-Optimization Contributors"},
+]
+dependencies = [
+  "accelerate>=1.4.0",
+  "numpy>=1.26.0",
+  "peft>=0.14.0",
+  "safetensors>=0.5.0",
+  "torch>=2.6.0",
+  "transformers>=4.52.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[project.scripts]
+po-smoke = "policy_optimization.scripts.smoke_train:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
