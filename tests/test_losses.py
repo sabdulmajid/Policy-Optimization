@@ -37,7 +37,7 @@ def _batch() -> RolloutBatch:
 
 def test_all_objectives_produce_scalar_losses() -> None:
     batch = _batch()
-    for name in ["rloo", "dapo", "gspo", "cispo", "maxrl"]:
+    for name in ["rloo", "dapo", "gspo", "cispo", "maxrl", "grpo"]:
         output = compute_objective(name, batch)
         assert output.loss.ndim == 0
         assert output.loss.isfinite()

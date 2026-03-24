@@ -1,5 +1,32 @@
 from __future__ import annotations
 
+"""MDPO: multimodal/conditional Direct Preference Optimization.
+
+Intuition
+---------
+MDPO extends DPO with conditional grounding and anchor penalties:
+- preference term: chosen should beat rejected,
+- conditional term: policy margin should align with context-grounded margin,
+- anchor term: chosen reward should not fall below a target margin.
+
+When this is useful
+-------------------
+- You have preference pairs plus contextual signals (e.g., image/context).
+- You want DPO-style learning with additional grounding constraints.
+- You need protection against reward collapse via an anchor term.
+
+What outcome to expect
+----------------------
+- Better preference alignment while respecting contextual consistency.
+- Tunable balance between pure preference fit and grounding fidelity.
+
+Mini example
+------------
+If policy prefers chosen over rejected but contradicts context-derived margin,
+the conditional term increases loss, nudging the model toward context-consistent
+preferences.
+"""
+
 import torch
 import torch.nn.functional as F
 
@@ -16,6 +43,15 @@ def mdpo_loss(
     anchor_weight: float = 0.1,
     anchor_margin: float = 0.0,
 ) -> ObjectiveOutput:
+    """Compute MDPO objective with preference, conditional, and anchor terms.
+
+    Code map
+    --------
+    1) Compute policy and (optional) reference margins.
+    2) Build base DPO-like preference term.
+    3) Add context-grounding term when context logprobs are provided.
+    4) Add anchor penalty to discourage weak chosen rewards.
+    """
     chosen = as_float32(batch.chosen_logprobs)
     rejected = as_float32(batch.rejected_logprobs)
     reference_margin = 0.0

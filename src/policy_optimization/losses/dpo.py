@@ -1,5 +1,30 @@
 from __future__ import annotations
 
+"""DPO: Direct Preference Optimization.
+
+Intuition
+---------
+DPO turns preference learning into a binary logistic objective on the margin
+between chosen and rejected responses. If a reference model is provided,
+optimization is anchored to improvement over that reference margin.
+
+When this is useful
+-------------------
+- You have pairwise preference data (chosen vs rejected outputs).
+- You want RLHF-style alignment without explicit reward-model rollouts.
+- You need a strong baseline objective for preference tuning.
+
+What outcome to expect
+----------------------
+- Increased probability of chosen responses relative to rejected ones.
+- Clear interpretability through margin and preference-accuracy metrics.
+
+Mini example
+------------
+If chosen logprob is -2.1 and rejected is -2.8, policy margin is +0.7.
+Positive margin increases `logsigmoid(beta * margin)`, reducing loss.
+"""
+
 import torch
 import torch.nn.functional as F
 
@@ -12,6 +37,15 @@ def dpo_loss(
     *,
     beta: float = 0.1,
 ) -> ObjectiveOutput:
+    """Compute DPO logistic preference objective.
+
+    Code map
+    --------
+    1) Compute policy margin = chosen - rejected.
+    2) Optionally subtract reference margin for anchored improvement.
+    3) Apply `-logsigmoid(beta * adjusted_margin)`.
+    4) Return loss + margin/accuracy diagnostics.
+    """
     chosen = as_float32(batch.chosen_logprobs)
     rejected = as_float32(batch.rejected_logprobs)
     reference_margin = 0.0

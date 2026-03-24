@@ -17,3 +17,42 @@
 - Real GPU smoke succeeded on `Qwen/Qwen2.5-0.5B` with all five objectives.
 - Moonlight remote-code preflight succeeded for `moonshotai/Moonlight-16B-A3B`.
 - Hugging Face cache must be redirected to `/pub7` on this machine because `/pub3` is full.
+- Checkpoint commit created: `52bcc63` (`docs: position advanced RL stack and add GRPO coverage`).
+- Focused verification in this session: `./.venv/bin/pytest -q tests/test_losses.py` passed.
+- Impact benchmark completed on `Qwen/Qwen2.5-0.5B` with `rloo/dapo/gspo/cispo/maxrl`.
+- Structured benchmark artifact: `reports/qwen_0.5b_benchmark_2026-03-23_v2.jsonl`.
+- Human-readable impact summary: `reports/benchmark-impact-2026-03-23.md`.
+- Full multi-seed matrix benchmark completed (`15` runs = `5 objectives x 3 seeds`) with `0` invalid runs.
+- Multi-seed artifacts:
+	- `reports/qwen_0.5b_benchmark_multiseed_2026-03-23.jsonl`
+	- `reports/benchmark-impact-multiseed-2026-03-23.md`
+- Added resumable benchmark CLI: `po-bench` (`src/policy_optimization/scripts/benchmark_matrix.py`).
+- Long-horizon matrix benchmark completed (`steps=10`, `15` runs, `0` invalid):
+	- `reports/qwen_0.5b_benchmark_long_h10_2026-03-23.jsonl`
+	- `reports/qwen_0.5b_benchmark_long_h10_2026-03-23.summary.json`
+	- `reports/qwen_0.5b_benchmark_long_h10_2026-03-23.md`
+- Real 7B benchmark completed on `Qwen/Qwen2.5-7B` (`steps=8`, `2 seeds`, `10` runs, `0` invalid):
+	- `reports/qwen_7b_benchmark_real_h8_2026-03-23.jsonl`
+	- `reports/qwen_7b_benchmark_real_h8_2026-03-23.md`
+- Newer Llama-family benchmark completed on `unsloth/Llama-3.2-3B-Instruct` (`steps=8`, `3 seeds`, `15` runs, `0` invalid):
+	- `reports/llama32_3b_real_h8_2026-03-23_clean.jsonl`
+	- `reports/llama32_3b_real_h8_2026-03-23_clean.md`
+- Baseline comparison signal on newer Llama run (final-step mean, reward/success):
+	- `rloo`: `0.2639` (baseline)
+	- `dapo`: `0.3722` (`+0.1083` vs `rloo`)
+	- `gspo`: `0.2500` (`-0.0139` vs `rloo`)
+	- `cispo`: `0.2500` (`-0.0139` vs `rloo`)
+	- `maxrl`: `0.2361` (`-0.0278` vs `rloo`)
+- README benchmark section now includes:
+	- newer Llama baseline-vs-objective table,
+	- plain-language metric interpretation (`+0.01` equals `+1` absolute point),
+	- artifact links for reproducibility.
+- GSM8K real-dataset matrix runs completed for both:
+	- `Qwen/Qwen2.5-7B`
+	- `Qwen/Qwen2.5-3B-Instruct`
+- GSM8K artifacts now available:
+	- `reports/qwen_7b_gsm8k_h24_2026-03-23.jsonl`
+	- `reports/qwen_7b_gsm8k_h24_2026-03-23.md`
+	- `reports/qwen_3b_gsm8k_h24_2026-03-23.jsonl`
+	- `reports/qwen_3b_gsm8k_h24_2026-03-23.md`
+- `po-bench` aggregation was hardened to dedupe per `(objective, seed)` and compute stats from valid rows, preventing resume-run report generation failures.

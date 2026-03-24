@@ -1,5 +1,35 @@
 from __future__ import annotations
 
+"""DGPO: grounded and risk-aware preference optimization.
+
+Intuition
+---------
+DGPO extends preference optimization with:
+- dynamic sample weighting from rewards/risk signals,
+- grounding regularization against context margins,
+- anchor pressure to avoid low-quality chosen behavior.
+
+This is useful when pairwise preference data alone is insufficient and you want
+additional robustness/control signals in the objective.
+
+When this is useful
+-------------------
+- You have reward side-signals and want risk-aware weighting.
+- You have context-conditioned margins and want grounded preferences.
+- You need stronger control over failure-prone or low-quality regions.
+
+What outcome to expect
+----------------------
+- Preference learning biased toward higher-value samples.
+- Improved grounding consistency when context terms are available.
+- Better diagnostics on margin quality and weighting behavior.
+
+Mini example
+------------
+If two pairs have identical preference margin but one has higher reward/risk
+weight, DGPO gives that pair larger optimization influence via sample weights.
+"""
+
 import torch
 import torch.nn.functional as F
 
@@ -17,6 +47,15 @@ def dgpo_loss(
     risk_weight: float = 0.5,
     anchor_weight: float = 0.05,
 ) -> ObjectiveOutput:
+    """Compute DGPO objective with weighted preference + grounding + anchor.
+
+    Code map
+    --------
+    1) Compute policy/reference margins and base preference term.
+    2) Build sample weights from rewards and group-relative variance signals.
+    3) Add grounding term from policy-context margin gap.
+    4) Add anchor penalty and combine all components.
+    """
     chosen = as_float32(batch.chosen_logprobs)
     rejected = as_float32(batch.rejected_logprobs)
     reference_margin = 0.0

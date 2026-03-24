@@ -1,5 +1,32 @@
 from __future__ import annotations
 
+"""GRPO: Group Relative Policy Optimization.
+
+Intuition
+---------
+GRPO normalizes rewards within each group (z-score by default) and applies a
+clipped-ratio surrogate. This makes updates depend on *relative* performance
+inside prompt groups, helping stabilize gradients when absolute reward scales
+shift between prompts.
+
+When this is useful
+-------------------
+- Reward scale differs significantly across prompts/batches.
+- You want value-head-free relative optimization.
+- You want PPO-style clipping plus group normalization.
+
+What outcome to expect
+----------------------
+- More comparable update magnitudes across heterogeneous prompts.
+- Better resilience to reward-scale drift.
+
+Mini example
+------------
+Group rewards [0.1, 0.9, 0.2, 0.8] become roughly z-scored
+[-1.0, +1.0, -0.8, +0.8], so updates reinforce winners relative to peers,
+not raw global reward magnitude.
+"""
+
 import torch
 
 from policy_optimization.advantages import group_zscore_advantages
@@ -14,6 +41,15 @@ def grpo_loss(
     clip_epsilon: float = 0.2,
     normalize_by_group_std: bool = True,
 ) -> ObjectiveOutput:
+    """Compute GRPO objective with optional group-std normalization.
+
+    Code map
+    --------
+    1) Build group-relative advantages (z-score by default).
+    2) Compute token ratio between new and old policies.
+    3) Clip ratios and apply PPO-style surrogate.
+    4) Return loss plus clipping and reward diagnostics.
+    """
     advantages = (
         group_zscore_advantages(batch.rewards, batch.group_ids)
         if advantages is None and normalize_by_group_std

@@ -5,6 +5,7 @@ import json
 import random
 import re
 from dataclasses import replace
+from typing import Any
 
 import torch
 
@@ -13,7 +14,7 @@ from policy_optimization.hf import build_rollout_batch, load_causal_lm, sample_g
 from policy_optimization.rewards import apply_overlong_reward_penalty
 from policy_optimization.trainers.step import run_policy_optimization_step
 
-INTEGER_RE = re.compile(r"-?\d+")
+NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overlong-penalty", type=float, default=0.0)
     parser.add_argument("--max-completion-length", type=int, default=24)
     parser.add_argument("--trainable-scope", choices=["full", "lm_head"], default="lm_head")
+    parser.add_argument("--dataset", choices=["synthetic", "gsm8k"], default="synthetic")
+    parser.add_argument("--dataset-split", default="test")
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--cache-dir")
     return parser.parse_args()
@@ -76,18 +79,78 @@ def build_arithmetic_prompts(prompt_count: int, seed: int) -> tuple[list[str], l
     return prompts, answers
 
 
-def extract_last_integer(text: str) -> str | None:
-    matches = INTEGER_RE.findall(text)
+def normalize_number_text(text: str) -> str:
+    normalized = text.replace(",", "").strip()
+    if normalized.startswith("+"):
+        normalized = normalized[1:]
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized
+
+
+def parse_gsm8k_final_answer(answer_text: str) -> str | None:
+    marker = "####"
+    if marker in answer_text:
+        candidate = answer_text.split(marker)[-1].strip()
+        numbers = NUMBER_RE.findall(candidate)
+        if numbers:
+            return normalize_number_text(numbers[-1])
+    numbers = NUMBER_RE.findall(answer_text)
+    if not numbers:
+        return None
+    return normalize_number_text(numbers[-1])
+
+
+def load_gsm8k_examples(split: str) -> list[tuple[str, str]]:
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise RuntimeError("datasets package is required for --dataset gsm8k. Install with: pip install datasets") from exc
+
+    dataset = load_dataset("gsm8k", "main", split=split)
+    examples: list[tuple[str, str]] = []
+    for row in dataset:
+        question = str(row.get("question", "")).strip()
+        answer = parse_gsm8k_final_answer(str(row.get("answer", "")))
+        if not question or answer is None:
+            continue
+        prompt = (
+            "Solve the following real-world math word problem. "
+            "Return only the final numeric answer with no explanation.\n"
+            f"Problem: {question}\n"
+            "Answer:"
+        )
+        examples.append((prompt, answer))
+
+    if not examples:
+        raise RuntimeError(f"No valid GSM8K examples found for split={split}")
+    return examples
+
+
+def sample_gsm8k_prompts(examples: list[tuple[str, str]], prompt_count: int, seed: int) -> tuple[list[str], list[str]]:
+    rng = random.Random(seed)
+    prompts: list[str] = []
+    answers: list[str] = []
+    for _ in range(prompt_count):
+        prompt, answer = examples[rng.randrange(len(examples))]
+        prompts.append(prompt)
+        answers.append(answer)
+    return prompts, answers
+
+
+def extract_last_number(text: str) -> str | None:
+    matches = NUMBER_RE.findall(text)
     if not matches:
         return None
-    return matches[-1]
+    return normalize_number_text(matches[-1])
 
 
 def exact_match_rewards(completions: list[str], answers: list[str], group_ids: torch.Tensor) -> torch.Tensor:
     rewards = []
     for completion, group_id in zip(completions, group_ids.tolist(), strict=True):
-        predicted = extract_last_integer(completion)
-        rewards.append(1.0 if predicted == answers[group_id] else 0.0)
+        predicted = extract_last_number(completion)
+        expected = normalize_number_text(answers[group_id])
+        rewards.append(1.0 if predicted == expected else 0.0)
     return torch.tensor(rewards, dtype=torch.float32)
 
 
@@ -144,8 +207,26 @@ def main() -> None:
         )
     )
 
+    gsm8k_examples: list[tuple[str, str]] | None = None
+    if args.dataset == "gsm8k":
+        gsm8k_examples = load_gsm8k_examples(args.dataset_split)
+        print(
+            json.dumps(
+                {
+                    "event": "dataset_loaded",
+                    "dataset": "gsm8k",
+                    "split": args.dataset_split,
+                    "examples": len(gsm8k_examples),
+                }
+            )
+        )
+
     for step in range(args.steps):
-        prompts, answers = build_arithmetic_prompts(args.prompts_per_step, seed=args.seed + step)
+        if args.dataset == "gsm8k":
+            assert gsm8k_examples is not None
+            prompts, answers = sample_gsm8k_prompts(gsm8k_examples, args.prompts_per_step, seed=args.seed + step)
+        else:
+            prompts, answers = build_arithmetic_prompts(args.prompts_per_step, seed=args.seed + step)
         rollouts = sample_group_rollouts(
             model,
             tokenizer,

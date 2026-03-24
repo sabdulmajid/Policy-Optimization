@@ -14,6 +14,7 @@ authors = [
 ]
 dependencies = [
   "accelerate>=1.4.0",
+  "datasets>=2.20.0",
   "numpy>=1.26.0",
   "peft>=0.14.0",
   "pillow>=12.0.0",
@@ -32,6 +33,7 @@ dev = [
 [project.scripts]
 po-smoke = "policy_optimization.scripts.smoke_train:main"
 po-drivingvqa-eval = "policy_optimization.scripts.drivingvqa_eval:main"
+po-bench = "policy_optimization.scripts.benchmark_matrix:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
