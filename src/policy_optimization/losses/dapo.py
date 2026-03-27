@@ -57,10 +57,11 @@ def dapo_loss(
     clipped = clipped_ratio * token_advantages
     surrogate = torch.minimum(unclipped, clipped)
     loss = -masked_mean(surrogate, batch.completion_mask).mean()
-    clip_fraction = ((ratio < (1.0 - lower_clip)) | (ratio > (1.0 + upper_clip))) & batch.completion_mask
+    clipped_tokens = ((ratio < (1.0 - lower_clip)) | (ratio > (1.0 + upper_clip))) & batch.completion_mask
+    clip_fraction = float(clipped_tokens[batch.completion_mask].float().mean().item()) if batch.completion_mask.any() else 0.0
     metrics = {
         "advantage_mean": float(advantages.mean().item()),
-        "clip_fraction": float(clip_fraction.float().mean().item()),
+        "clip_fraction": clip_fraction,
         "reward_mean": float(batch.rewards.float().mean().item()),
     }
     return ObjectiveOutput(loss=loss, metrics=metrics)

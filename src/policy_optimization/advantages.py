@@ -89,7 +89,20 @@ def maxrl_weights(
     return weights
 
 
-def maxrl_compute_index_weight(success_probability: torch.Tensor, truncation_level: int) -> torch.Tensor:
+def maxrl_compute_index_weight(
+    success_probability: torch.Tensor,
+    truncation_level: int | torch.Tensor,
+) -> torch.Tensor:
     success_probability = as_float32(success_probability).clamp(min=1e-6, max=1.0 - 1e-6)
-    powers = torch.arange(truncation_level, device=success_probability.device, dtype=torch.float32)
-    return torch.pow(1.0 - success_probability.unsqueeze(-1), powers).sum(dim=-1)
+    if isinstance(truncation_level, torch.Tensor):
+        counts = truncation_level.to(device=success_probability.device, dtype=torch.long)
+    else:
+        counts = torch.full_like(success_probability, int(truncation_level), dtype=torch.long)
+    counts = counts.clamp_min(0)
+    max_count = int(counts.max().item()) if counts.numel() else 0
+    if max_count == 0:
+        return torch.zeros_like(success_probability)
+    powers = torch.arange(max_count, device=success_probability.device, dtype=torch.float32)
+    series = torch.pow(1.0 - success_probability.unsqueeze(-1), powers)
+    valid = powers.unsqueeze(0) < counts.unsqueeze(-1)
+    return (series * valid.to(dtype=series.dtype)).sum(dim=-1)

@@ -72,10 +72,12 @@ def dgpo_loss(
 
     sample_weights = torch.ones_like(preference_term)
     if batch.rewards is not None:
-        normalized_rewards = as_float32(batch.rewards) / as_float32(batch.rewards).mean().clamp_min(1e-6)
+        reward_scale = as_float32(batch.rewards).abs().mean().clamp_min(1e-6)
+        normalized_rewards = (as_float32(batch.rewards) / reward_scale).clamp(min=-4.0, max=4.0)
         sample_weights = sample_weights + risk_weight * normalized_rewards
     if batch.group_ids is not None and batch.rewards is not None:
-        sample_weights = sample_weights + 0.25 * torch.abs(group_zscore_advantages(batch.rewards, batch.group_ids))
+        sample_weights = sample_weights + 0.25 * torch.abs(group_zscore_advantages(batch.rewards, batch.group_ids)).clamp(max=4.0)
+    sample_weights = sample_weights.clamp(min=0.0, max=8.0)
 
     grounding_term = torch.zeros_like(preference_term)
     grounding_gap = torch.zeros_like(preference_term)
@@ -89,7 +91,9 @@ def dgpo_loss(
     metrics = {
         "policy_margin_mean": float(policy_margin.mean().item()),
         "grounding_gap_mean": float(grounding_gap.mean().item()),
+        "sample_weight_min": float(sample_weights.min().item()),
         "sample_weight_mean": float(sample_weights.mean().item()),
+        "sample_weight_max": float(sample_weights.max().item()),
         "preference_accuracy": float((policy_margin > 0.0).float().mean().item()),
     }
     return ObjectiveOutput(loss=loss, metrics=metrics)
