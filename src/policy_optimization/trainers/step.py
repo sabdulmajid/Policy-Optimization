@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
+from policy_optimization.hf import compute_token_logprobs
 from policy_optimization.losses import compute_objective
 from policy_optimization.types import RolloutBatch
 
@@ -39,7 +40,11 @@ def run_policy_optimization_step(
         raise ValueError("No trainable parameters found on the model.")
 
     optimizer.zero_grad(set_to_none=True)
-    output = compute_objective(objective_name, batch, **objective_kwargs)
+    objective_batch = batch
+    if batch.input_ids is not None and batch.attention_mask is not None:
+        current_token_logprobs = compute_token_logprobs(model, batch.input_ids, batch.attention_mask)
+        objective_batch = replace(batch, token_logprobs=current_token_logprobs)
+    output = compute_objective(objective_name, objective_batch, **objective_kwargs)
     output.loss.backward()
 
     if max_grad_norm is not None:
@@ -49,6 +54,7 @@ def run_policy_optimization_step(
 
     optimizer.step()
     metrics = dict(output.metrics)
+    metrics["recomputed_logprobs"] = 1.0 if objective_batch is not batch else 0.0
     metrics["loss"] = float(output.loss.detach().item())
     metrics["grad_norm"] = grad_norm
     return OptimizationStepResult(loss=metrics["loss"], grad_norm=grad_norm, metrics=metrics)

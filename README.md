@@ -12,6 +12,20 @@ Give this library your model, prompts, and reward signal; it gives you objective
 - You need reproducible benchmark outputs for PR reviews and experiment gates (JSONL + markdown artifacts).
 - You need to tune larger open models with lower-memory objective variants before committing to expensive full-scale training.
 
+## Current trainer capabilities
+
+- GPU preflight is emitted before every smoke run and benchmark run.
+- Rollout objectives recompute current-policy logprobs during optimization instead of reusing cached rollout values.
+- Training and evaluation are separated: sampled prompts drive training, while a fixed held-out prompt set drives before/after comparison.
+- Frozen-rollout optimization supports repeated epochs plus group-aware minibatching.
+- Optional KL reward shaping can use a separately loaded frozen reference model, including on a second GPU.
+
+## Operational guarantees in this repo
+
+- Benchmarks only count as comparative evidence when they include fixed before/after eval events.
+- Experiment CLIs emit machine-readable JSONL plus markdown summaries instead of relying on terminal output.
+- The default workflow is single-node and PyTorch-native, so objective bugs are easier to inspect than in a large distributed trainer.
+
 ## What this project is
 
 `Policy-Optimization` is a library for LLM post-training objectives, including:
@@ -52,49 +66,28 @@ It is designed so you can swap objective logic without rewriting your whole trai
 - precision-safe math in critical paths -> fewer long-horizon instability failures
 - real-model runnable CLIs (`po-smoke`, `po-bench`) -> reproducible evidence, not toy pseudocode
 
-## Latest benchmark results (easy to read)
+## Benchmark note
 
-Real long-horizon objective matrix (`24` steps, `3` seeds, `15` runs/model) on two widely-used models:
+The repository includes archived real-model artifacts in `reports/`, but comparative claims should only be made from runs produced by the corrected fixed-eval benchmark path.
 
-- `Qwen/Qwen2.5-7B`
-- `NousResearch/Hermes-3-Llama-3.1-8B`
+Current benchmark standard in this repo:
 
-### What improved most
+- run training on sampled prompts,
+- evaluate before and after training on a fixed held-out prompt set,
+- compare objectives using those fixed eval deltas, not changing training rewards.
 
-| Model | Baseline (`rloo`) final reward | Best objective final reward | Improvement vs `rloo` |
-|---|---:|---:|---:|
-| `Qwen/Qwen2.5-7B` | `0.8438` | `0.8854` (`maxrl`) | `+0.0416` |
-| `Hermes-3-Llama-3.1-8B` | `0.3229` | `0.3738` (`dapo`) | `+0.0509` |
+Archived artifacts remain useful for debugging and reproducibility, but they should be treated as historical traces unless regenerated with the corrected benchmark flow.
 
-How to interpret:
+## Path to industry-standard post-training
 
-- reward/success are in `[0, 1]`.
-- `+0.01` = `+1` absolute percentage point improvement.
-- This means the best objective is giving about `+4.16` points on Qwen-7B and `+5.09` points on Hermes-8B versus the `rloo` baseline.
+This repo is now a correct small-node trainer and objective workbench. The next bar is not cosmetic tuning; it is standardization:
 
-### Full objective deltas (final-step reward vs `rloo`)
+1. Reproduce the same tasks with accepted baselines such as `TRL` and compare on identical evals.
+2. Replace synthetic arithmetic as the headline result with accepted math, code, and instruction-following eval suites.
+3. Add resumable training state, richer reference-policy management, and stronger long-run logging.
+4. Move large-scale rollout serving to a distributed stack such as `verl` or `NVIDIA NeMo RL` once the single-node path is exhausted.
 
-| Objective | Qwen-7B Δ vs `rloo` | Hermes-8B Δ vs `rloo` |
-|---|---:|---:|
-| `rloo` | `+0.0000` | `+0.0000` |
-| `dapo` | `-0.1771` | `+0.0509` |
-| `gspo` | `+0.0312` | `+0.0000` |
-| `cispo` | `+0.0312` | `+0.0000` |
-| `maxrl` | `+0.0416` | `-0.0104` |
-
-Data quality (both models):
-
-- parsed runs: `15/15`
-- invalid runs: `0`
-- tracebacks: `False`
-- JSON parse errors: `0`
-
-Raw artifacts:
-
-- `reports/qwen_7b_sota_track_h24_2026-03-23.jsonl`
-- `reports/qwen_7b_sota_track_h24_2026-03-23.md`
-- `reports/hermes3_8b_sota_track_h24_2026-03-23.jsonl`
-- `reports/hermes3_8b_sota_track_h24_2026-03-23.md`
+That progression keeps this repository focused on objective quality and experiment rigor, while scaling only after the local training loop is trustworthy.
 
 ## Examples
 
@@ -124,7 +117,14 @@ print(output.metrics)
 ```bash
 export HF_HOME=$PWD/.hf-cache
 export HUGGINGFACE_HUB_CACHE=$HF_HOME
-po-smoke --model-id Qwen/Qwen2.5-0.5B --objective gspo --steps 2 --device cuda:0
+po-smoke \
+  --model-id Qwen/Qwen2.5-0.5B \
+  --objective gspo \
+  --device cuda:0 \
+  --trainable-scope lm_head \
+  --updates-per-rollout 4 \
+  --minibatch-groups 2 \
+  --steps 2
 ```
 
 ### 3) Run a full benchmark matrix (resumable)
@@ -133,6 +133,10 @@ po-smoke --model-id Qwen/Qwen2.5-0.5B --objective gspo --steps 2 --device cuda:0
 po-bench \
   --model-id Qwen/Qwen2.5-0.5B \
   --device cuda:0 \
+  --trainable-scope lm_head \
+  --updates-per-rollout 4 \
+  --minibatch-groups 2 \
+  --eval-prompts 16 \
   --steps 10 \
   --seeds 23 24 25 \
   --objectives rloo dapo gspo cispo maxrl \
@@ -142,10 +146,30 @@ po-bench \
 po-bench --resume \
   --model-id Qwen/Qwen2.5-0.5B \
   --device cuda:0 \
+  --trainable-scope lm_head \
+  --updates-per-rollout 4 \
+  --minibatch-groups 2 \
+  --eval-prompts 16 \
   --steps 10 \
   --seeds 23 24 25 \
   --objectives rloo dapo gspo cispo maxrl \
   --output-prefix qwen_0.5b_benchmark_long_h10_2026-03-23
+```
+
+### 4) Run with a frozen KL reference model on a second GPU
+
+```bash
+po-smoke \
+  --model-id Qwen/Qwen2.5-0.5B \
+  --reference-model-id Qwen/Qwen2.5-0.5B \
+  --reference-device cuda:1 \
+  --objective rloo \
+  --device cuda:0 \
+  --trainable-scope lm_head \
+  --kl-beta 0.01 \
+  --updates-per-rollout 2 \
+  --minibatch-groups 1 \
+  --steps 2
 ```
 
 ## Quickstart
@@ -160,9 +184,12 @@ pytest
 
 ## Verified now
 
-- tests: `16 passed`
+- tests: `29 passed, 1 skipped`
 - objectives smoke-tested on real model: `rloo`, `dapo`, `gspo`, `cispo`, `maxrl`
-- benchmark pipeline: resumable and artifact-backed
+- benchmark pipeline: resumable, GPU-preflighted, and fixed-eval artifact-backed
+- trainer supports grouped rollout minibatching, repeated frozen-rollout epochs, and KL/reference penalties
+
+The skipped test is LoRA-only and is skipped cleanly when `peft` is not installed in the current shell.
 
 ## Who this is for
 
@@ -184,6 +211,7 @@ What is still needed for SOTA-style claims:
 
 - task-specific benchmarks (e.g., coding/math/instruction datasets with accepted eval suites)
 - larger model matrix beyond one 7B family
-- longer-horizon training and stronger baseline comparisons
+- stronger baseline comparisons against standard stacks such as TRL or distributed RL runners
+- checkpoint/resume infrastructure for longer training jobs
 
 The point today: this is a practical objective-engineering platform MLEs can use immediately, and extend toward SOTA evaluations without rewriting the stack.

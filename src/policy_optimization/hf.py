@@ -72,6 +72,7 @@ def sample_group_rollouts(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
+    do_sample: bool = True,
 ) -> SampledRollouts:
     prompts_out: list[str] = []
     completions_out: list[str] = []
@@ -87,17 +88,25 @@ def sample_group_rollouts(
             prompt_ids = prompt_inputs["input_ids"].to(model.device)
             prompt_attention_mask = prompt_inputs["attention_mask"].to(model.device)
             prompt_len = prompt_ids.shape[-1]
-            sequences = model.generate(
+            generate_kwargs = dict(
                 input_ids=prompt_ids,
                 attention_mask=prompt_attention_mask,
-                do_sample=True,
-                num_return_sequences=group_size,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
+            if do_sample:
+                generate_kwargs.update(
+                    do_sample=True,
+                    num_return_sequences=group_size,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            else:
+                if group_size != 1:
+                    raise ValueError("Greedy generation only supports group_size=1.")
+                generate_kwargs.update(do_sample=False, num_return_sequences=1)
+            sequences = model.generate(**generate_kwargs)
             for sequence in sequences:
                 completion_token_ids = sequence[prompt_len:].tolist()
                 completion = tokenizer.decode(completion_token_ids, skip_special_tokens=True)
@@ -129,11 +138,24 @@ def _pad_sequences(sequences: list[list[int]], pad_token_id: int, device: torch.
     return input_ids, attention_mask
 
 
+def compute_token_logprobs(
+    model: PreTrainedModel,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+    logits = outputs.logits[:, :-1, :]
+    target_ids = input_ids[:, 1:]
+    return gather_logprobs(logits, target_ids)
+
+
 def build_rollout_batch(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     rollouts: SampledRollouts,
     rewards: torch.Tensor,
+    *,
+    reference_model: PreTrainedModel | None = None,
 ) -> RolloutBatch:
     device = model.device
     full_sequences = [
@@ -142,14 +164,19 @@ def build_rollout_batch(
     ]
     input_ids, attention_mask = _pad_sequences(full_sequences, tokenizer.pad_token_id, device=device)
     prompt_lengths = torch.tensor([len(ids) for ids in rollouts.prompt_token_ids], dtype=torch.long, device=device)
-
-    outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
-    logits = outputs.logits[:, :-1, :]
     target_ids = input_ids[:, 1:]
+
     shifted_attention = attention_mask[:, 1:].bool()
     positions = torch.arange(target_ids.shape[1], device=device).unsqueeze(0)
     completion_mask = shifted_attention & (positions >= (prompt_lengths - 1).unsqueeze(1))
-    token_logprobs = gather_logprobs(logits, target_ids)
+    token_logprobs = compute_token_logprobs(model, input_ids, attention_mask)
+    ref_token_logprobs = None
+    if reference_model is not None:
+        ref_token_logprobs = compute_token_logprobs(
+            reference_model,
+            input_ids.to(reference_model.device),
+            attention_mask.to(reference_model.device),
+        ).to(device)
 
     return RolloutBatch(
         token_logprobs=token_logprobs,
@@ -157,6 +184,7 @@ def build_rollout_batch(
         completion_mask=completion_mask,
         rewards=rewards.to(device=device, dtype=torch.float32),
         group_ids=rollouts.group_ids,
+        ref_token_logprobs=ref_token_logprobs,
         input_ids=input_ids,
         attention_mask=attention_mask,
     )

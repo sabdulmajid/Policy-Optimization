@@ -30,7 +30,7 @@ high-success behavior under the chosen weighting rule.
 
 import torch
 
-from policy_optimization.advantages import group_mean, maxrl_compute_index_weight, maxrl_weights
+from policy_optimization.advantages import group_count, group_mean, maxrl_compute_index_weight, maxrl_weights
 from policy_optimization.ops import sequence_logprob
 from policy_optimization.types import ObjectiveOutput, RolloutBatch
 
@@ -61,8 +61,9 @@ def maxrl_loss(
     loss = -(seq_logprobs * weights.detach()).mean()
     successes = (batch.rewards.float() >= success_threshold).float()
     estimated_success_rate = group_mean(successes, batch.group_ids)
-    truncation_level = int((batch.group_ids == batch.group_ids[0]).sum().item())
-    scaling = maxrl_compute_index_weight(estimated_success_rate, truncation_level=truncation_level)
+    truncation_levels = group_count(batch.group_ids)
+    scaling = maxrl_compute_index_weight(estimated_success_rate, truncation_level=truncation_levels)
+    loss = -(seq_logprobs * weights.detach() * scaling.detach()).mean()
     metrics = {
         "success_rate_mean": float(estimated_success_rate.mean().item()),
         "weight_mean": float(weights.mean().item()),

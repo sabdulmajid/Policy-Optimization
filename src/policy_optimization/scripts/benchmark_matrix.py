@@ -8,23 +8,38 @@ import time
 from pathlib import Path
 from statistics import mean, pstdev
 
+from policy_optimization.gpu import inspect_gpu_environment
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a multi-seed benchmark matrix for policy objectives.")
     parser.add_argument("--model-id", default="Qwen/Qwen2.5-0.5B")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cache-dir", default="/pub7/hf-cache")
-    parser.add_argument("--trainable-scope", choices=["full", "lm_head"], default="lm_head")
+    parser.add_argument("--trainable-scope", choices=["full", "lm_head", "lora"], default="lm_head")
+    parser.add_argument("--lora-rank", type=int, default=16)
+    parser.add_argument("--lora-alpha", type=int, default=32)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument("--dataset", choices=["synthetic", "gsm8k"], default="synthetic")
     parser.add_argument("--dataset-split", default="test")
     parser.add_argument("--objectives", nargs="+", default=["rloo", "dapo", "gspo", "cispo", "maxrl"])
     parser.add_argument("--seeds", nargs="+", type=int, default=[23, 24, 25])
     parser.add_argument("--steps", type=int, default=10)
+    parser.add_argument("--updates-per-rollout", type=int, default=4)
+    parser.add_argument("--minibatch-groups", type=int, default=0)
     parser.add_argument("--prompts-per-step", type=int, default=6)
     parser.add_argument("--group-size", type=int, default=4)
     parser.add_argument("--max-new-tokens", type=int, default=18)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--eval-prompts", type=int, default=8)
+    parser.add_argument("--eval-seed", type=int, default=424242)
+    parser.add_argument("--eval-max-new-tokens", type=int, default=0)
+    parser.add_argument("--eval-temperature", type=float, default=0.0)
+    parser.add_argument("--eval-top-p", type=float, default=1.0)
+    parser.add_argument("--kl-beta", type=float, default=0.0)
+    parser.add_argument("--reference-model-id", default="")
+    parser.add_argument("--reference-device", default="")
     parser.add_argument("--output-prefix", default="qwen_0.5b_benchmark_long_horizon_2026-03-23")
     parser.add_argument("--reports-dir", default="reports")
     parser.add_argument("--resume", action="store_true")
@@ -57,13 +72,17 @@ def _valid_metric_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]
             continue
         first_step = row.get("first_step")
         last_step = row.get("last_step")
+        baseline_eval = row.get("baseline_eval")
+        final_eval = row.get("final_eval")
         if not isinstance(first_step, dict) or not isinstance(last_step, dict):
+            continue
+        if not isinstance(baseline_eval, dict) or not isinstance(final_eval, dict):
             continue
         valid.append(row)
     return valid
 
 
-def _parse_log_file(log_path: Path, expected_steps: int) -> dict[str, object]:
+def _parse_log_file(log_path: Path, expected_steps: int, returncode: int) -> dict[str, object]:
     text = log_path.read_text(errors="replace")
     rows: list[dict[str, object]] = []
     parse_errors = 0
@@ -77,9 +96,13 @@ def _parse_log_file(log_path: Path, expected_steps: int) -> dict[str, object]:
             parse_errors += 1
     train_steps = [row for row in rows if row.get("event") == "train_step"]
     skipped_steps = [row for row in rows if row.get("event") == "skip_step"]
+    eval_events = [row for row in rows if row.get("event") == "eval"]
+    baseline_eval = next((row for row in eval_events if row.get("stage") == "before_training"), None)
+    final_eval = next((row for row in reversed(eval_events) if row.get("stage") == "after_training"), None)
     has_traceback = "Traceback (most recent call last)" in text
     completed_step_events = len(train_steps) + len(skipped_steps)
-    status = "ok" if completed_step_events == expected_steps and not has_traceback else "bad"
+    has_required_eval = isinstance(baseline_eval, dict) and isinstance(final_eval, dict)
+    status = "ok" if returncode == 0 and completed_step_events == expected_steps and not has_traceback and has_required_eval else "bad"
     return {
         "parse_errors": parse_errors,
         "has_traceback": has_traceback,
@@ -88,6 +111,8 @@ def _parse_log_file(log_path: Path, expected_steps: int) -> dict[str, object]:
         "completed_step_events": completed_step_events,
         "first_step": train_steps[0] if train_steps else None,
         "last_step": train_steps[-1] if train_steps else None,
+        "baseline_eval": baseline_eval,
+        "final_eval": final_eval,
         "status": status,
     }
 
@@ -97,15 +122,28 @@ def _render_markdown(
     model_id: str,
     device: str,
     trainable_scope: str,
+    lora_rank: int,
+    lora_alpha: int,
+    lora_dropout: float,
     dataset: str,
     dataset_split: str,
     objectives: list[str],
     seeds: list[int],
     steps: int,
+    updates_per_rollout: int,
+    minibatch_groups: int,
     prompts_per_step: int,
     group_size: int,
     max_new_tokens: int,
     temperature: float,
+    eval_prompts: int,
+    eval_seed: int,
+    eval_max_new_tokens: int,
+    eval_temperature: float,
+    eval_top_p: float,
+    kl_beta: float,
+    reference_model_id: str,
+    reference_device: str,
     rows: list[dict[str, object]],
     raw_jsonl_path: Path,
 ) -> str:
@@ -120,36 +158,40 @@ def _render_markdown(
     lines.append(f"- Model: `{model_id}`")
     lines.append(f"- Device: `{device}`")
     lines.append(f"- Trainable scope: `{trainable_scope}`")
+    if trainable_scope == "lora":
+        lines.append(f"- LoRA config: `rank={lora_rank}`, `alpha={lora_alpha}`, `dropout={lora_dropout}`")
     lines.append(f"- Dataset: `{dataset}`")
     lines.append(f"- Dataset split: `{dataset_split}`")
     lines.append(f"- Objectives: {', '.join(f'`{obj}`' for obj in objectives)}")
     lines.append(f"- Seeds: {', '.join(f'`{seed}`' for seed in seeds)}")
     lines.append(
-        f"- Per-run config: `steps={steps}`, `prompts-per-step={prompts_per_step}`, `group-size={group_size}`, `max-new-tokens={max_new_tokens}`, `temperature={temperature}`"
+        f"- Per-run config: `steps={steps}`, `updates-per-rollout={updates_per_rollout}`, `minibatch-groups={minibatch_groups}`, `prompts-per-step={prompts_per_step}`, `group-size={group_size}`, `max-new-tokens={max_new_tokens}`, `temperature={temperature}`"
+    )
+    lines.append(
+        f"- Fixed eval config: `eval-prompts={eval_prompts}`, `eval-seed={eval_seed}`, `eval-max-new-tokens={eval_max_new_tokens}`, `eval-temperature={eval_temperature}`, `eval-top-p={eval_top_p}`"
+    )
+    lines.append(
+        f"- KL config: `kl-beta={kl_beta}`, `reference-model-id={reference_model_id or 'none'}`, `reference-device={reference_device or 'n/a'}`"
     )
     lines.append(f"- Raw parsed artifact: `{raw_jsonl_path.as_posix()}`")
     lines.append("")
 
-    lines.append("## Aggregate Results (Mean ± Std across seeds)")
+    lines.append("## Aggregate Results On Fixed Eval Set (Mean ± Std across seeds)")
     lines.append("")
-    lines.append("| Objective | Valid runs | Reward step0 | Reward stepN | Reward Δ | Success step0 | Success stepN | Success Δ | GradNorm step0 | GradNorm stepN |")
+    lines.append("| Objective | Valid runs | Eval reward before | Eval reward after | Eval reward Δ | Eval success before | Eval success after | Eval success Δ | GradNorm step0 | GradNorm stepN |")
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 
     for objective in objectives:
         objective_rows = by_objective[objective]
         metric_rows = _valid_metric_rows(objective_rows)
 
-        first_rewards = [float(row["first_step"]["reward_mean"]) for row in metric_rows]
-        last_rewards = [float(row["last_step"]["reward_mean"]) for row in metric_rows]
-        reward_deltas = [
-            float(row["last_step"]["reward_mean"]) - float(row["first_step"]["reward_mean"]) for row in metric_rows
-        ]
+        first_rewards = [float(row["baseline_eval"]["eval_reward_mean"]) for row in metric_rows]
+        last_rewards = [float(row["final_eval"]["eval_reward_mean"]) for row in metric_rows]
+        reward_deltas = [float(row["final_eval"]["eval_reward_mean"]) - float(row["baseline_eval"]["eval_reward_mean"]) for row in metric_rows]
 
-        first_success = [float(row["first_step"]["success_rate"]) for row in metric_rows]
-        last_success = [float(row["last_step"]["success_rate"]) for row in metric_rows]
-        success_deltas = [
-            float(row["last_step"]["success_rate"]) - float(row["first_step"]["success_rate"]) for row in metric_rows
-        ]
+        first_success = [float(row["baseline_eval"]["eval_success_rate"]) for row in metric_rows]
+        last_success = [float(row["final_eval"]["eval_success_rate"]) for row in metric_rows]
+        success_deltas = [float(row["final_eval"]["eval_success_rate"]) - float(row["baseline_eval"]["eval_success_rate"]) for row in metric_rows]
 
         first_grad = [float(row["first_step"].get("grad_norm", float("nan"))) for row in metric_rows]
         last_grad = [float(row["last_step"].get("grad_norm", float("nan"))) for row in metric_rows]
@@ -187,8 +229,8 @@ def _render_markdown(
     lines.append("")
     lines.append("## Interpretation")
     lines.append("")
-    lines.append("- This benchmark is designed as strong engineering evidence for reproducibility and objective behavior under consistent conditions.")
-    lines.append("- It is not a final SOTA or convergence claim; use longer horizons, larger models, and task-specific datasets for that bar.")
+    lines.append("- These summaries use a fixed held-out eval prompt set, not changing training prompts, so before/after deltas are comparable.")
+    lines.append("- This is still a compact-node benchmark, not a final SOTA claim; use longer runs, larger models, and accepted eval suites for that bar.")
     lines.append("")
 
     return "\n".join(lines)
@@ -196,6 +238,8 @@ def _render_markdown(
 
 def main() -> None:
     args = parse_args()
+    eval_max_new_tokens = args.max_new_tokens if args.eval_max_new_tokens <= 0 else args.eval_max_new_tokens
+    print(json.dumps({"event": "gpu_preflight", **inspect_gpu_environment(args.device)}), flush=True)
 
     reports_dir = Path(args.reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -249,12 +293,22 @@ def main() -> None:
                     args.cache_dir,
                     "--trainable-scope",
                     args.trainable_scope,
+                    "--lora-rank",
+                    str(args.lora_rank),
+                    "--lora-alpha",
+                    str(args.lora_alpha),
+                    "--lora-dropout",
+                    str(args.lora_dropout),
                     "--dataset",
                     args.dataset,
                     "--dataset-split",
                     args.dataset_split,
                     "--steps",
                     str(args.steps),
+                    "--updates-per-rollout",
+                    str(args.updates_per_rollout),
+                    "--minibatch-groups",
+                    str(args.minibatch_groups),
                     "--prompts-per-step",
                     str(args.prompts_per_step),
                     "--group-size",
@@ -265,9 +319,25 @@ def main() -> None:
                     str(args.temperature),
                     "--top-p",
                     str(args.top_p),
+                    "--eval-prompts",
+                    str(args.eval_prompts),
+                    "--eval-seed",
+                    str(args.eval_seed),
+                    "--eval-max-new-tokens",
+                    str(eval_max_new_tokens),
+                    "--eval-temperature",
+                    str(args.eval_temperature),
+                    "--eval-top-p",
+                    str(args.eval_top_p),
+                    "--kl-beta",
+                    str(args.kl_beta),
                     "--seed",
                     str(seed),
                 ]
+                if args.reference_model_id:
+                    command.extend(["--reference-model-id", args.reference_model_id])
+                if args.reference_device:
+                    command.extend(["--reference-device", args.reference_device])
 
                 env = os.environ.copy()
                 env["HF_HOME"] = args.cache_dir
@@ -279,7 +349,7 @@ def main() -> None:
                     proc = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, env=env, text=True)
                 elapsed_sec = int(time.time() - start_time)
 
-                parsed = _parse_log_file(log_path, expected_steps=args.steps)
+                parsed = _parse_log_file(log_path, expected_steps=args.steps, returncode=proc.returncode)
                 row = {
                     "objective": objective,
                     "seed": seed,
@@ -306,12 +376,8 @@ def main() -> None:
     for objective in objectives:
         objective_rows = by_objective[objective]
         metric_rows = _valid_metric_rows(objective_rows)
-        reward_delta = [
-            float(row["last_step"]["reward_mean"]) - float(row["first_step"]["reward_mean"]) for row in metric_rows
-        ]
-        success_delta = [
-            float(row["last_step"]["success_rate"]) - float(row["first_step"]["success_rate"]) for row in metric_rows
-        ]
+        reward_delta = [float(row["final_eval"]["eval_reward_mean"]) - float(row["baseline_eval"]["eval_reward_mean"]) for row in metric_rows]
+        success_delta = [float(row["final_eval"]["eval_success_rate"]) - float(row["baseline_eval"]["eval_success_rate"]) for row in metric_rows]
         rd_m, rd_s = _safe_stats(reward_delta)
         sd_m, sd_s = _safe_stats(success_delta)
         summary.append(
@@ -332,15 +398,28 @@ def main() -> None:
             model_id=args.model_id,
             device=args.device,
             trainable_scope=args.trainable_scope,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
             dataset=args.dataset,
             dataset_split=args.dataset_split,
             objectives=objectives,
             seeds=list(args.seeds),
             steps=args.steps,
+            updates_per_rollout=args.updates_per_rollout,
+            minibatch_groups=args.minibatch_groups,
             prompts_per_step=args.prompts_per_step,
             group_size=args.group_size,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
+            eval_prompts=args.eval_prompts,
+            eval_seed=args.eval_seed,
+            eval_max_new_tokens=eval_max_new_tokens,
+            eval_temperature=args.eval_temperature,
+            eval_top_p=args.eval_top_p,
+            kl_beta=args.kl_beta,
+            reference_model_id=args.reference_model_id,
+            reference_device=args.reference_device,
             rows=rows,
             raw_jsonl_path=raw_jsonl_path,
         )

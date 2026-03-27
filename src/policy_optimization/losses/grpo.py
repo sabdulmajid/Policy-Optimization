@@ -60,10 +60,12 @@ def grpo_loss(
     token_advantages = advantages.detach().unsqueeze(-1)
     surrogate = torch.minimum(ratio * token_advantages, clipped_ratio * token_advantages)
     loss = -masked_mean(surrogate, batch.completion_mask).mean()
+    clipped_tokens = ((ratio != clipped_ratio) & batch.completion_mask)
+    clip_fraction = float(clipped_tokens[batch.completion_mask].float().mean().item()) if batch.completion_mask.any() else 0.0
     metrics = {
         "advantage_mean": float(advantages.mean().item()),
         "advantage_std": float(advantages.std(unbiased=False).item()),
-        "clip_fraction": float((((ratio != clipped_ratio) & batch.completion_mask).float().mean().item())),
+        "clip_fraction": clip_fraction,
         "reward_mean": float(batch.rewards.float().mean().item()),
     }
     return ObjectiveOutput(loss=loss, metrics=metrics)
